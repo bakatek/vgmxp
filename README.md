@@ -21,17 +21,16 @@ Assembler: **RASM**
 rasm vgmplay.asm
 ```
 
-Output: `VGMplay.BIN` (load address `#4000`).
+compile result : `VGMxp.dsk`
 
 ## Run (CPC)
 
 ```
-MEMORY &3FFF
-LOAD"VGMplay.BIN",&4000
-CALL &4000
-```
+|dload,XX 
+xx corresponding to the DSK file.
+run"vgmxp
 
-Put the binary on a floppy, or load it from the PicoCPC HDD.
+```
 
 VGM files must be reachable the same way as with BASIC `|cat` / `|cd` / `|play` (PLAY name **without** `.vgm`).
 
@@ -46,6 +45,7 @@ VGM files must be reachable the same way as with BASIC `|cat` / `|cd` / `|play` 
 | C | Order: next or shuffle |
 | B | After a track: loop the folder, or play once |
 | T | Language FR / EN / ES |
+| V | Versions or about
 
 **Two columns**, 18 × 2 = 36 files per page. At the bottom of a column, Down opens the **next page** (same column).
 

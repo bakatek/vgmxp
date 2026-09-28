@@ -21,14 +21,14 @@ Ensamblador: **RASM**
 rasm vgmplay.asm
 ```
 
-Salida: `VGMplay.BIN` (origen `#4000`).
+Archivo generado: `VGMxp.dsk`
 
 ## Arranque (CPC)
 
 ```
-MEMORY &3FFF
-LOAD"VGMplay.BIN",&4000
-CALL &4000
+|dload,XX 
+xx, correspondiente al archivo DSK.
+run"vgmxp
 ```
 
 Ponga el binario en un disquete o cárguelo desde el HDD PicoCPC.

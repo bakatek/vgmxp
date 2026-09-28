@@ -21,14 +21,14 @@ Assembleur : **RASM**
 rasm vgmplay.asm
 ```
 
-Fichier produit : `VGMplay.BIN` (origine `#4000`).
+Fichier produit : `VGMxp.dsk`
 
 ## Lancement (CPC)
 
 ```
-MEMORY &3FFF
-LOAD"VGMplay.BIN",&4000
-CALL &4000
+|dload,XX 
+xx correspondant au fichier DSK
+run"vgmxp
 ```
 
 Placez le binaire sur une disquette, ou chargez-le depuis l’HDD PicoCPC.
@@ -46,6 +46,7 @@ Les VGM doivent être accessibles comme avec `|cat` / `|cd` / `|play` en BASIC (
 | C | Ordre : suivant ou hasard |
 | B | Après un morceau : boucle le dossier, ou un seul fichier |
 | T | Langue FR / EN / ES |
+| V | Versions ou a propos
 
 Liste en **deux colonnes**, 18 × 2 = 36 fichiers par page. En bas d’une colonne, Bas ouvre la **page suivante** (même colonne).
 
