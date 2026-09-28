@@ -1,5 +1,5 @@
 ; ========================================================================
-; PicoCPC VGM Explorer v5.35
+; PicoCPC VGM Explorer v5.36
 ; https://github.com/bakatek/vgmxp
 ; Touche V = a propos (non documentee a l'ecran)
 ; Z80 / RASM / CPC 6128 + PicoCPC ROM slot 5
@@ -1328,7 +1328,7 @@ ri_d:   push    af
         bit     4, a
         jr      nz, ri_o
         bit     5, a
-        jr      nz, ri_o
+        jr      nz, ri_esc
         jr      read_input
 ri_u:   ld      a, 240
         ret
@@ -1342,6 +1342,8 @@ ri_o:   ld      a, (ignore_ok)
         or      a
         jr      nz, read_input
         ld      a, 13
+        ret
+ri_esc: ld      a, 252
         ret
 ri_idle:
         call    MC_WAIT_FLYBACK
@@ -1475,11 +1477,6 @@ nav_redraw:
         jp      keyloop
 
 do_esc:
-        ld      a, (depth)
-        or      a
-        jp      z, do_quit
-        call    cd_up
-        jp      browser
 do_quit:
         call    KL_U_ROM_DISABLE
         call    SCR_CLEAR
@@ -1780,32 +1777,39 @@ do_about:
         call    TXT_SET_PEN
         ld      h, 2
         ld      l, 4
-        ld      de, ab_t1
-        call    at_str
+        call    TXT_SET_CURSOR
+        ld      hl, tab_ab1
+        call    print_lang
         ld      h, 2
         ld      l, 6
-        ld      de, ab_t2
-        call    at_str
+        call    TXT_SET_CURSOR
+        ld      hl, ab_url
+        call    print_str
         ld      h, 2
         ld      l, 8
-        ld      de, ab_t3
-        call    at_str
+        call    TXT_SET_CURSOR
+        ld      hl, tab_ab3
+        call    print_lang
         ld      h, 2
         ld      l, 10
-        ld      de, ab_t4
-        call    at_str
+        call    TXT_SET_CURSOR
+        ld      hl, tab_ab4
+        call    print_lang
         ld      h, 2
         ld      l, 12
-        ld      de, ab_t5
-        call    at_str
+        call    TXT_SET_CURSOR
+        ld      hl, ab_fw
+        call    print_str
         ld      h, 2
         ld      l, 14
-        ld      de, ab_t6
-        call    at_str
+        call    TXT_SET_CURSOR
+        ld      hl, ab_date
+        call    print_str
         ld      h, 2
         ld      l, 20
-        ld      de, ab_t7
-        call    at_str
+        call    TXT_SET_CURSOR
+        ld      hl, tab_ab7
+        call    print_lang
 ab_w:   call    KM_READ_CHAR
         jr      nc, ab_w
         call    draw_ui
@@ -1963,7 +1967,7 @@ str_len:        db 0
 
 str_dotdot:     db "..", 0
 
-txt_title:      db "PicoCPC VGM Explorer v5.35", 0
+txt_title:      db "PicoCPC VGM Explorer v5.36", 0
 txt_root:       db "HDD", 0
 txt_empty:      db "Aucun fichier .vgm", 0
 txt_par:        db " <..>", 0
@@ -1995,13 +1999,25 @@ tab_l2:         dw l2_fr, l2_en, l2_es
 txt_demo:       db "Demo pixels", 0
 txt_demofoot:   db "Une touche pour revenir", 0
 txt_tour:       db "/I", 92, 0
-ab_t1:          db "VGM Explorer  v5.35", 0
-ab_t2:          db "github.com/bakatek/vgmxp", 0
-ab_t3:          db "CPC 6128 + PicoCPC ROM5", 0
-ab_t4:          db "Teste avec PicoCPC:", 0
-ab_t5:          db "FW rev. 0.9", 0
-ab_t6:          db "Sep 27 2026  #7d7cbb7c", 0
-ab_t7:          db "Une touche pour revenir", 0
+ab_t1_fr:       db "VGM Explorer  v5.36", 0
+ab_t1_en:       db "VGM Explorer  v5.36", 0
+ab_t1_es:       db "VGM Explorer  v5.36", 0
+ab_url:         db "github.com/bakatek/vgmxp", 0
+ab_t3_fr:       db "CPC 6128 + PicoCPC ROM5", 0
+ab_t3_en:       db "CPC 6128 + PicoCPC ROM5", 0
+ab_t3_es:       db "CPC 6128 + PicoCPC ROM5", 0
+ab_t4_fr:       db "Teste avec PicoCPC :", 0
+ab_t4_en:       db "Tested with PicoCPC:", 0
+ab_t4_es:       db "Probado con PicoCPC:", 0
+ab_fw:          db "FW rev. 0.9", 0
+ab_date:        db "Sep 27 2026  #7d7cbb7c", 0
+ab_t7_fr:       db "Une touche pour revenir", 0
+ab_t7_en:       db "Press any key to return", 0
+ab_t7_es:       db "Una tecla para volver", 0
+tab_ab1:        dw ab_t1_fr, ab_t1_en, ab_t1_es
+tab_ab3:        dw ab_t3_fr, ab_t3_en, ab_t3_es
+tab_ab4:        dw ab_t4_fr, ab_t4_en, ab_t4_es
+tab_ab7:        dw ab_t7_fr, ab_t7_en, ab_t7_es
 txt_dotvgm:     db ".vgm", 0
 txt_playing:    db "Lecture...", 0
 txt_esc:        db "ESC = Stop", 0
@@ -2039,5 +2055,4 @@ did_stop:       db 0
 sav_key:        ds 3
 fly_block:      ds 9
 
-        ;SAVE 'VGMplay.BIN',#4000,$-#4000
         SAVE 'VGMxp.BIN',#4000,$-#4000,DSK,'build/vgmxp.dsk'
