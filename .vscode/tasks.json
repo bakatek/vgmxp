@@ -1,0 +1,64 @@
+{
+    "version": "2.0.0",
+    "tasks": [
+        {
+            "label": "1. Compiler avec RASM",
+            "type": "shell",
+            "command": "${workspaceFolder}/tools/rasm_w64.exe",
+            "args": [
+                "${file}",
+                "-eo"
+            ],
+            "group": {
+                "kind": "build",
+                "isDefault": false
+            },
+            "problemMatcher": {
+                "owner": "rasm",
+                "fileLocation": ["relative", "${workspaceFolder}"],
+                "pattern": {
+                    "regexp": "^(.*?):(\\d+):\\s+(error|warning):\\s+(.*)$",
+                    "file": 1,
+                    "line": 2,
+                    "severity": 3,
+                    "message": 4
+                }
+            },
+            "options": {
+                "shell": {
+                    "executable": "cmd.exe",
+                    "args": ["/d", "/c"]
+                }
+            }
+        },
+        {
+            "label": "2. Lancer l'Émulateur ACE-DL",
+            "type": "shell",
+            "command": "${workspaceFolder}/tools/AceDL/AceDL.exe",
+            "args": [
+			    "${workspaceFolder}/build/player.dsk -autoRunFile 'hello.bin'"
+            ],
+            "problemMatcher": [],
+            "options": {
+                "shell": {
+                    "executable": "cmd.exe",
+                    "args": ["/d", "/c"]
+                }
+            }
+        },
+        {
+            "label": "Build & Run (Amstrad CPC)",
+            "type": "shell",
+            "dependsOrder": "sequence",
+            "dependsOn": [
+                "1. Compiler avec RASM",
+                "2. Lancer l'Émulateur ACE-DL"
+            ],
+            "group": {
+                "kind": "build",
+                "isDefault": true
+            },
+            "problemMatcher": []
+        }
+    ]
+}
