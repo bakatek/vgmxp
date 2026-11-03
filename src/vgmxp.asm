@@ -1,13 +1,16 @@
 ; ========================================================================
-; PicoCPC VGM Explorer v5.36
+; PicoCPC VGM Explorer v5.42
 ; https://github.com/bakatek/vgmxp
 ; Touche V = a propos (non documentee a l'ecran)
 ; Z80 / RASM / CPC 6128 + PicoCPC ROM slot 5
 ;
-; CAT  = #C8F0   CD = #CBCF   PLAY = #C5D4
+; Firmware PicoCPC 1.02 (2026-11-01). Marche sur CPC 464 et 6128.
+; Le slot de la ROM PicoCPC (5 par defaut) et les adresses de CAT / CD /
+; PLAY sont retrouves au demarrage dans la table des noms de la ROM.
+; Catalogue : (%s) pour un dossier, %-8s.%3s %3luK pour un fichier.
 ;
-; rasm vgmplay.asm
-; MEMORY &3FFF : LOAD"VGMplay.BIN",&4000 : CALL &4000
+; rasm vgmxp.asm
+; MEMORY &3FFF : LOAD"VGMXP.BIN",&4000 : CALL &4000
 ; ========================================================================
 
         org     #4000
@@ -38,9 +41,7 @@ COL_W            equ 20
 MAX_ITEMS        equ 80
 NAME_LEN         equ 16
 
-RSX_CAT          equ #C8F0
-RSX_CD           equ #CBCF
-RSX_PLAY         equ #C5D4
+STACK_TOP       equ #8000              ; pile privee (sous capture_buffer)
 
 capture_buffer   equ #8000
 CAPTURE_LIMIT    equ #8E00
@@ -53,9 +54,34 @@ pend_buf         equ #97C0
 ; ------------------------------------------------------------------------
 start:
         di
-        ld      sp, #C000
+        ld      (old_sp), sp           ; pile du BASIC, rendue en quittant
+        ld      sp, STACK_TOP
         ei
         call    init_video
+        ld      h, 5
+        ld      l, 1
+        ld      de, txt_title
+        call    at_str
+        ld      h, 1
+        ld      l, 3
+        ld      de, txt_search
+        call    at_str
+        call    resolve_rsx
+        ld      h, 1
+        ld      l, 4
+        call    TXT_SET_CURSOR
+        ld      hl, txt_slot
+        call    print_str
+        ld      a, (rom_slot)
+        call    print_num
+        ld      hl, txt_catat
+        call    print_str
+        ld      hl, (addr_cat)
+        call    print_hex16
+        ld      h, 1
+        ld      l, 5
+        ld      de, txt_reading
+        call    at_str
         xor     a
         ld      (depth), a
         ld      (cursor), a
@@ -167,7 +193,8 @@ call_pico:
         push    hl
         push    ix
         call    KL_U_ROM_ENABLE
-        ld      c, 5
+        ld      a, (rom_slot)
+        ld      c, a
         call    KL_ROM_SELECT
         pop     ix
         pop     hl
@@ -214,46 +241,6 @@ he_yes: ld      a, 1
         ld      (did_stop), a
         ld      a, #EF
         scf
-        ret
-
-pico_play_start:
-        call    KL_U_ROM_ENABLE
-        ld      c, 5
-        call    KL_ROM_SELECT
-        ld      bc, #FBF2
-        ld      a, #D0
-        out     (c), a
-        call    #CEB5
-        ld      a, (str_len)
-        out     (c), a
-        call    #CEB5
-        ld      hl, str_buf
-        ld      a, (str_len)
-        or      a
-        jr      z, pps_off
-        ld      d, a
-pps_lp: ld      a, (hl)
-        out     (c), a
-        inc     hl
-        call    #CEB5
-        dec     d
-        jr      nz, pps_lp
-        xor     a
-        out     (c), a
-        call    #CEB5
-pps_off:
-        call    KL_U_ROM_DISABLE
-        ret
-
-pico_play_stop:
-        call    KL_U_ROM_ENABLE
-        ld      c, 5
-        call    KL_ROM_SELECT
-        ld      bc, #FBF2
-        ld      a, #D3
-        out     (c), a
-        call    #CEB5
-        call    KL_U_ROM_DISABLE
         ret
 
 ; PLAY teste KM_READ_KEY (#BB1B) pour #EF. On traduit ESC (66) -> #EF
@@ -393,7 +380,6 @@ do_catalog:
         xor     a
         ld      (total), a
         ld      (page_cnt), a
-        ld      (pend_len), a
         ld      hl, capture_buffer
         ld      (cap_ptr), hl
         ld      (hl), 0
@@ -410,7 +396,11 @@ do_catalog:
         ei
 
         xor     a
-        ld      hl, RSX_CAT
+        ld      hl, (addr_cat)
+        ld      a, h
+        or      l
+        jp      z, cat_missing
+        xor     a
         call    call_pico
 
         di
@@ -424,7 +414,24 @@ do_catalog:
 
         ld      hl, (cap_ptr)
         ld      (hl), 0
+        ld      a, (capture_buffer)
+        or      a
+        jp      z, cat_empty
         jp      parse_buf
+
+cat_missing:
+        call    SCR_CLEAR
+        ld      hl, txt_nocat
+        call    print_str
+        call    #BB18
+        jp      do_quit
+
+cat_empty:
+        call    SCR_CLEAR
+        ld      hl, txt_emptycap
+        call    print_str
+        call    #BB18
+        jp      do_quit
 
 patch_jp:
         push    bc
@@ -509,149 +516,210 @@ hw_esc: ld      a, 252
         ret
 
 ; ========================================================================
-; PARSEUR
-; Tokens PicoCPC typiques :
-;   (VGM)            -> dossier
-;   AcidTrac.vgm     -> fichier
-;   02Spice  .vgm    -> nom + extension separes
-;   164K             -> taille, ignoree
+; RESOLUTION DES COMMANDES
+; Cherche le slot ROM de la PicoCPC (slot 5 par defaut, puis 1..31), puis
+; les adresses des commandes CAT / CD / PLAY dans sa table de noms.
+; Marche donc sur 464 comme sur 6128, quel que soit le slot attribue.
+; ========================================================================
+resolve_rsx:
+        ld      a, 5
+        call    probe_slot
+        ret     z
+        ld      c, 1
+rs_lp:  ld      a, c
+        cp      5
+        jr      z, rs_nx
+        push    bc
+        call    probe_slot
+        pop     bc
+        ret     z
+rs_nx:  inc     c
+        ld      a, c
+        cp      32
+        jr      c, rs_lp
+        ld      hl, 0                  ; rien trouve
+        ld      (addr_cat), hl
+        ld      (addr_cd), hl
+        ld      (addr_play), hl
+        ret
+
+; A = slot. Retour Z si CAT, CD et PLAY trouves, NZ sinon.
+probe_slot:
+        ld      (rom_slot), a
+        ld      hl, 0
+        ld      (addr_cat), hl
+        ld      (addr_cd), hl
+        ld      (addr_play), hl
+        call    KL_U_ROM_ENABLE
+        ld      a, (rom_slot)
+        ld      c, a
+        call    KL_ROM_SELECT
+        ld      hl, (#C004)            ; pointeur table des noms
+        ld      a, h
+        cp      #C0
+        jr      c, ps_done             ; pas une ROM d'extension
+        ld      b, 0                   ; index de commande
+ps_lp:  ld      a, (hl)
+        or      a
+        jr      z, ps_done
+        cp      32
+        jr      c, ps_done
+        push    hl
+        push    bc
+        call    match_cmd              ; A = 1 cat, 2 cd, 3 play, 0 autre
+        pop     bc
+        pop     hl
+        or      a
+        jr      z, ps_sk
+        push    hl
+        push    af
+        ld      a, b
+        ld      l, a
+        ld      h, 0
+        ld      e, a
+        ld      d, 0
+        add     hl, hl
+        add     hl, de                 ; *3
+        ld      de, #C006
+        add     hl, de                 ; adresse du JP dans la ROM
+        pop     af
+        cp      1
+        jr      nz, ps_cd
+        ld      (addr_cat), hl
+        jr      ps_sv
+ps_cd:  cp      2
+        jr      nz, ps_pl
+        ld      (addr_cd), hl
+        jr      ps_sv
+ps_pl:  ld      (addr_play), hl
+ps_sv:  pop     hl
+ps_sk:  ld      a, (hl)                ; saute le nom (bit 7 sur le dernier car.)
+        inc     hl
+        or      a
+        jp      p, ps_sk
+        inc     b
+        ld      a, b
+        cp      40
+        jr      c, ps_lp
+ps_done:
+        call    KL_U_ROM_DISABLE
+        ld      hl, (addr_cat)
+        ld      a, h
+        or      l
+        jr      z, ps_no
+        ld      hl, (addr_cd)
+        ld      a, h
+        or      l
+        jr      z, ps_no
+        ld      hl, (addr_play)
+        ld      a, h
+        or      l
+        jr      z, ps_no
+        xor     a
+        ret
+ps_no:  or      1
+        ret
+
+; HL = nom ROM. A = 1/2/3 si CAT/CD/PLAY
+match_cmd:
+        ld      de, nm_cat
+        call    name_eq
+        jr      z, mc_cat
+        ld      de, nm_cd
+        call    name_eq
+        jr      z, mc_cd
+        ld      de, nm_play
+        call    name_eq
+        jr      z, mc_pl
+        xor     a
+        ret
+mc_cat: ld      a, 1
+        ret
+mc_cd:  ld      a, 2
+        ret
+mc_pl:  ld      a, 3
+        ret
+
+; HL = nom ROM (bit7), DE = modele bit7. Z si egal
+name_eq:
+        push    hl
+ne_lp:  ld      a, (de)
+        xor     (hl)
+        and     #7F
+        jr      nz, ne_no
+        ld      a, (hl)
+        inc     hl
+        inc     de
+        or      a
+        jp      p, ne_lp
+        pop     hl
+        xor     a
+        ret
+ne_no:  pop     hl
+        or      1
+        ret
+
+nm_cat:  db "CA", 'T'+#80
+nm_cd:   db "C", 'D'+#80
+nm_play: db "PLA", 'Y'+#80
+
+; ========================================================================
+; PARSEUR DU CATALOGUE (firmware 1.02)
+; CAT renvoie un seul flux de texte, sans saut de ligne entre les entrees :
+;   "Drive C:/VGM" CR LF CR LF puis des entrees de 17 car. + 3 espaces :
+;   dossier : (NOM)           fichier : "Gift 001.vgm 164K" ("%-8s.%3s %3luK")
+; hook_txt ne garde que les car. >= 32 (CR garde, LF/TAB -> espace).
+; Un token = suite de car. entre espaces. Regles :
+;   (xxx)        -> dossier
+;   ...  .vgm    -> fin d'un nom de fichier : nom = mots en attente + token
+;   nnnK         -> taille, ignoree (uniquement juste apres une extension)
+;   . : /        -> entete ou autre extension, mots en attente abandonnes
 ; ========================================================================
 parse_buf:
         xor     a
         ld      (total), a
-        ld      (pend_len), a
-        ld      (saw_vgm), a
-
+        ld      (dir_mode), a
+        ld      (after_ext), a
+        ld      hl, 0
+        ld      (pend_ptr), hl
         ld      a, (depth)
         or      a
-        jr      z, pb_dirs
+        jr      z, pb_go
         ld      hl, str_dotdot
         ld      a, 2
         call    store_item
-
-; --- Passe 1 : tout ce qui est entre ( ) = repertoire ---
-pb_dirs:
-        ld      hl, capture_buffer
-pd_lp:  ld      a, (hl)
-        or      a
-        jr      z, pb_go
-        cp      '('
-        jr      nz, pd_nx
-        inc     hl
-        ld      de, str_buf
-        ld      b, 0
-pd_cp:  ld      a, (hl)
-        or      a
-        jr      z, pd_st
-        cp      ')'
-        jr      z, pd_st
-        cp      13
-        jr      z, pd_st
-        cp      32
-        jr      z, pd_st
-        ld      (de), a
-        inc     de
-        inc     hl
-        inc     b
-        ld      a, b
-        cp      NAME_LEN-1
-        jr      c, pd_cp
-pd_st:  xor     a
-        ld      (de), a
-        ld      a, b
-        cp      1
-        jr      c, pd_nx
-        push    hl
-        ld      hl, str_buf
-        ld      a, 1
-        call    store_item
-        pop     hl
-pd_nx:  inc     hl
-        jr      pd_lp
-
 pb_go:  ld      hl, capture_buffer
-
 pb_lp:  call    skip_sep
         ld      a, (hl)
         or      a
-        jp      z, pb_flush
-
+        ret     z
         ld      (tok_ptr), hl
-        call    scan_tok               ; HL = apres token, tok_len rempli
+        call    scan_tok               ; HL = fin du token, tok_len
+        ld      (tok_end), hl
         push    hl
+        call    do_token
+        pop     hl
+        jr      pb_lp
 
-        ld      hl, (tok_ptr)
-        call    tok_is_drive
-        jp      z, pb_pop
-
-        ld      hl, (tok_ptr)
-        ld      a, (hl)
-        cp      '('
-        jp      z, pb_pop              ; deja pris en passe 1
-        cp      ')'
-        jp      z, pb_pop
-
-pb_notdir:
-        ld      hl, (tok_ptr)
-        call    tok_is_size
-        jp      z, pb_pop
-        ld      hl, (tok_ptr)
-        call    tok_is_num
-        jp      z, pb_pop
-
-        ld      hl, (tok_ptr)
-        call    tok_is_ext
-        jr      nz, pb_notext
-        ; token = ".vgm" -> fichier = pending
-        ld      a, (pend_len)
-        or      a
-        jr      z, pb_pop
-        ld      a, 1
-        ld      (saw_vgm), a
-        call    pend_add_vgm
-        ld      hl, pend_buf
-        xor     a
-        call    store_item
-        xor     a
-        ld      (pend_len), a
-        jp      pb_pop
-
-pb_notext:
-        ld      hl, (tok_ptr)
-        call    tok_has_vgm
-        jr      nz, pb_plain
-        ; mot se termine par .vgm
-        ld      a, 1
-        ld      (saw_vgm), a
-        ld      hl, (tok_ptr)
-        xor     a
-        call    store_tok
-        xor     a
-        ld      (pend_len), a
-        jp      pb_pop
-
-pb_plain:
-        ; nom sans extension -> pending
-        call    save_pending
-
-pb_pop: pop     hl
-        jp      pb_lp
-
-pb_flush:
-        ; ne pas transformer un nom isolé (souvent un DIR) en fichier
-        ret
-
-; HL in = pos, saute espaces
+; saute les espaces ; un CR = fin de ligne : on oublie les mots en attente
 skip_sep:
         ld      a, (hl)
         or      a
         ret     z
+        cp      13
+        jr      z, ss_cr
         cp      32
         ret     nz
         inc     hl
         jr      skip_sep
+ss_cr:  push    hl
+        ld      hl, 0
+        ld      (pend_ptr), hl
+        pop     hl
+        inc     hl
+        jr      skip_sep
 
-; HL = debut token -> avance HL a la fin, tok_len = longueur
+; HL = debut token -> HL = fin du token, tok_len = longueur
 scan_tok:
         xor     a
         ld      (tok_len), a
@@ -660,32 +728,158 @@ st_lp:  ld      a, (hl)
         ret     z
         cp      32
         ret     z
+        cp      13
+        ret     z
         inc     hl
         ld      a, (tok_len)
         inc     a
         ld      (tok_len), a
         jr      st_lp
 
-tok_is_drive:
+do_token:
+        ld      a, (dir_mode)
+        or      a
+        jp      nz, dt_indir
+        ld      hl, (tok_ptr)
         ld      a, (hl)
-        call    upcase
-        cp      'D'
-        ret     nz
-        inc     hl
-        ld      a, (hl)
-        call    upcase
-        cp      'R'
-        ret     nz
+        cp      '('
+        jp      z, dt_dir
+        ld      a, (after_ext)
+        or      a
+        jr      z, dt_nosz
         xor     a
+        ld      (after_ext), a
+        ld      hl, (tok_ptr)
+        call    tok_is_size
+        ret     z                      ; taille apres l'extension : ignoree
+dt_nosz:
+        ld      hl, (tok_ptr)
+        call    tok_is_vgm
+        jr      z, dt_file
+        ld      hl, (tok_ptr)          ; commence par '.' = extension (.txt, .)
+        ld      a, (hl)
+        cp      '.'
+        jr      nz, dt_nodot
+        ld      a, 1
+        ld      (after_ext), a         ; autre extension (.txt...) : ignoree
+        jr      dt_reset
+dt_nodot:
+        ld      hl, (tok_ptr)
+        call    tok_has_sep
+        jr      z, dt_reset            ; entete "Drive C:/..."
+        ld      hl, (pend_ptr)         ; mot normal : on l'accumule
+        ld      a, h
+        or      l
+        jr      nz, dt_acc
+        ld      hl, (tok_ptr)
+        ld      (pend_ptr), hl
+dt_acc: ld      hl, (tok_end)
+        ld      (pend_end), hl
+        ret
+dt_reset:
+        ld      hl, 0
+        ld      (pend_ptr), hl
         ret
 
-; taille : chiffres puis K (ex 164K, 8K)
+; fichier .vgm : nom = [debut, fin) + les 4 car. de l'extension
+dt_file:
+        ld      hl, (tok_end)
+        ld      de, 4
+        or      a
+        sbc     hl, de
+        ld      (ext_ptr), hl          ; HL = debut de l'extension
+        ld      a, (tok_len)
+        cp      4
+        jr      z, df_alone
+        ld      de, (pend_ptr)         ; token = fin du nom + extension
+        ld      a, d
+        or      e
+        jr      nz, df_cp
+        ld      de, (tok_ptr)
+        jr      df_cp
+df_alone:
+        ld      de, (pend_ptr)         ; ".vgm" seul : nom = mots en attente
+        ld      a, d
+        or      e
+        jr      z, dt_reset            ; rien devant : ignore
+        ld      hl, (pend_end)
+df_cp:  or      a                      ; DE = debut, HL = fin exclue
+        sbc     hl, de                 ; HL = longueur du nom
+        ld      a, h
+        or      a
+        ld      a, l
+        jr      nz, df_cl
+        cp      NAME_LEN-4
+        jr      c, df_ok
+df_cl:  ld      a, NAME_LEN-5          ; place pour ".vgm" + 0
+df_ok:  ld      c, a
+        ld      b, 0
+        ex      de, hl                 ; HL = debut du nom
+        ld      de, str_buf
+        or      a
+        jr      z, df_ext
+        ldir
+df_ext: ld      hl, (ext_ptr)
+        ld      bc, 4
+        ldir
+        xor     a
+        ld      (de), a
+        ld      hl, str_buf
+        xor     a
+        call    store_item             ; type 0 = fichier
+        ld      a, 1
+        ld      (after_ext), a
+        jr      dt_reset
+
+; dossier : "(nom)" ; le nom peut contenir des espaces
+dt_dir:
+        ld      hl, 0
+        ld      (pend_ptr), hl
+        xor     a
+        ld      (after_ext), a
+        ld      hl, (tok_ptr)
+        inc     hl
+        ld      (dir_ptr), hl
+        ld      a, 1
+        ld      (dir_mode), a
+dt_indir:
+        ld      hl, (tok_end)
+        dec     hl
+        ld      a, (hl)
+        cp      ')'
+        ret     nz                     ; pas fini, le nom continue
+        ld      de, (dir_ptr)
+        or      a
+        sbc     hl, de                 ; HL = longueur du nom
+        xor     a
+        ld      (dir_mode), a
+        ld      a, h
+        or      a
+        jr      nz, di_cl
+        ld      a, l
+        or      a
+        ret     z                      ; "()" : vide
+        cp      NAME_LEN-1
+        jr      c, di_ok
+di_cl:  ld      a, NAME_LEN-1
+di_ok:  ld      c, a
+        ld      b, 0
+        ex      de, hl                 ; HL = debut du nom
+        ld      de, str_buf
+        ldir
+        xor     a
+        ld      (de), a
+        ld      hl, str_buf
+        ld      a, 1                   ; type 1 = dossier
+        jp      store_item
+
+; taille : chiffres puis K (ex 164K, 8K). Z si oui
 tok_is_size:
         ld      a, (tok_len)
         cp      2
         ret     c
         ld      b, a
-        dec     b                      ; tout sauf dernier
+        dec     b
 ts_d:   ld      a, (hl)
         cp      '0'
         ret     c
@@ -702,58 +896,12 @@ ts_d:   ld      a, (hl)
 ts_no:  or      1
         ret
 
-; token uniquement numerique (fragment de taille)
-tok_is_num:
-        ld      a, (tok_len)
-        or      a
-        ret     z
-        ld      b, a
-tn_lp:  ld      a, (hl)
-        cp      '0'
-        ret     c
-        cp      '9'+1
-        jr      nc, tn_no
-        inc     hl
-        djnz    tn_lp
-        xor     a
-        ret
-tn_no:  or      1
-        ret
-
-; token entier = ".vgm"
-tok_is_ext:
+; Z si le token (tok_ptr/tok_end/tok_len) se termine par ".vgm"
+tok_is_vgm:
         ld      a, (tok_len)
         cp      4
-        ret     nz
-        ld      a, (hl)
-        cp      '.'
-        ret     nz
-        inc     hl
-        ld      a, (hl)
-        call    upcase
-        cp      'V'
-        ret     nz
-        inc     hl
-        ld      a, (hl)
-        call    upcase
-        cp      'G'
-        ret     nz
-        inc     hl
-        ld      a, (hl)
-        call    upcase
-        cp      'M'
-        ret     nz
-        xor     a
-        ret
-
-; se termine par .vgm
-tok_has_vgm:
-        ld      a, (tok_len)
-        cp      5
         ret     c
-        ld      e, a
-        ld      d, 0
-        add     hl, de
+        ld      hl, (tok_end)
         dec     hl
         ld      a, (hl)
         call    upcase
@@ -772,87 +920,31 @@ tok_has_vgm:
         dec     hl
         ld      a, (hl)
         cp      '.'
-        ret     nz
-        xor     a
         ret
 
-add_dir_tok:
-        ld      hl, (tok_ptr)
-        inc     hl                     ; saute (
-        ld      de, str_buf
-        ld      b, 0
-ad_lp:  ld      a, (hl)
-        or      a
-        jr      z, ad_dn
-        cp      ')'
-        jr      z, ad_dn
-        cp      32
-        jr      z, ad_dn
-        ld      (de), a
-        inc     de
-        inc     hl
-        inc     b
-        ld      a, b
-        cp      NAME_LEN-1
-        jr      c, ad_lp
-ad_dn:  xor     a
-        ld      (de), a
-        ld      hl, str_buf
-        ld      a, 1
-        jp      store_item
-
-; Ajoute .vgm a pend_buf si absent
-pend_add_vgm:
-        ld      hl, pend_buf
-        call    name_has_ext
-        ret     z
-        ld      hl, pend_buf
-        ld      a, (pend_len)
-        ld      e, a
-        ld      d, 0
-        add     hl, de
-        ld      (hl), '.'
-        inc     hl
-        ld      (hl), 'v'
-        inc     hl
-        ld      (hl), 'g'
-        inc     hl
-        ld      (hl), 'm'
-        inc     hl
-        ld      (hl), 0
-        ld      a, (pend_len)
-        add     a, 4
-        ld      (pend_len), a
-        ret
-
-save_pending:
-        ld      hl, (tok_ptr)
-        ld      de, pend_buf
+; HL = token. Z si contient ':' ou '/'
+tok_has_sep:
+        ld      b, ':'
+        ld      c, '/'
+tok_has_chr:
         ld      a, (tok_len)
-        cp      NAME_LEN
-        jr      c, sp_ok
-        ld      a, NAME_LEN-1
-sp_ok:  ld      (pend_len), a
-        ld      b, a
+        ld      d, a
         or      a
+        jr      z, thc_no
+thc_lp: ld      a, (hl)
+        cp      b
         ret     z
-sp_lp:  ld      a, (hl)
-        ld      (de), a
+        cp      c
+        ret     z
         inc     hl
-        inc     de
-        djnz    sp_lp
-        xor     a
-        ld      (de), a
+        dec     d
+        jr      nz, thc_lp
+thc_no: or      1
         ret
 
-; Copie un token de longueur tok_len (pas zero-termine)
-store_tok:
-        ld      a, (tok_len)
-        ld      (copy_len), a
-        jr      store_common
-
-; A = type, HL = nom zero-termine
+; A = type (0 fichier, 1 dossier, 2 ".."), HL = nom zero-termine
 store_item:
+        push    af
         push    hl
         ld      b, 0
 si_cnt: ld      a, (hl)
@@ -866,7 +958,7 @@ si_cnt: ld      a, (hl)
 si_got: ld      a, b
         ld      (copy_len), a
         pop     hl
-
+        pop     af
 store_common:
         push    af
         ld      a, (total)
@@ -899,8 +991,6 @@ store_common:
         ld      a, NAME_LEN-1
 si_ok:  ld      b, a
 si_cp:  ld      a, (de)
-        cp      32
-        jr      z, si_z
         or      a
         jr      z, si_z
         ld      (hl), a
@@ -975,6 +1065,11 @@ du_body:
         ld      l, 10
         ld      de, txt_empty
         call    at_str
+        ld      h, 1
+        ld      l, 12
+        call    TXT_SET_CURSOR
+        ld      hl, capture_buffer
+        call    print_raw
         jp      du_foot
 
 du_lst: ld      b, 0
@@ -1480,6 +1575,9 @@ do_esc:
 do_quit:
         call    KL_U_ROM_DISABLE
         call    SCR_CLEAR
+        di
+        ld      sp, (old_sp)
+        ei
         ret
 
 do_ok:
@@ -1508,7 +1606,7 @@ ok_dir: ld      a, (cursor)
         jp      z, keyloop
         ld      a, 1
         ld      ix, param_blk
-        ld      hl, RSX_CD
+        ld      hl, (addr_cd)
         call    call_pico
         ld      a, (depth)
         inc     a
@@ -1531,16 +1629,16 @@ play_current:
         call    draw_play_screen
         xor     a
         ld      (did_stop), a
-        call    pico_play_start
-        call    KL_U_ROM_ENABLE
-        ld      c, 5
-        call    KL_ROM_SELECT
-        ld      hl, #F000
-        call    #CF58
+        ld      hl, (addr_play)
+        ld      a, h
+        or      l
+        jp      z, play_missing
         call    hook_esc_on
-        call    #C644
+        ld      a, 1
+        ld      ix, param_blk
+        ld      hl, (addr_play)
+        call    call_pico
         call    hook_esc_off
-        call    KL_U_ROM_DISABLE
         call    init_video
         ld      a, (did_stop)
         or      a
@@ -1553,6 +1651,12 @@ play_current:
         jr      z, play_next           ; suite
         call    random_next
         jr      play_go
+play_missing:
+        call    SCR_CLEAR
+        ld      hl, txt_noplay
+        call    print_str
+        call    #BB18
+        ret
 play_next:
         ld      a, (cursor)
         inc     a
@@ -1565,8 +1669,8 @@ play_next:
 pn_ok:  ld      a, b
         ld      (cursor), a
         call    get_type
-        cp      2
-        jr      z, play_next           ; saute uniquement ..
+        or      a
+        jr      nz, play_next          ; saute dossiers et ..
 play_go:
         ld      a, (cursor)
         call    copy_name_to_str
@@ -1593,8 +1697,8 @@ rnd_lp: ld      a, b
 rnd_ok: ld      a, b
         ld      (cursor), a
         call    get_type
-        cp      2
-        jr      z, random_next
+        or      a
+        jr      nz, random_next
         ret
 
 draw_play_screen:
@@ -1634,7 +1738,7 @@ cd_up:
         ld      (str_len), a
         ld      a, 1
         ld      ix, param_blk
-        ld      hl, RSX_CD
+        ld      hl, (addr_cd)
         call    call_pico
         ld      a, (depth)
         dec     a
@@ -1960,6 +2064,41 @@ nh_no:  or      1
         ret
 
 ; ------------------------------------------------------------------------
+; HL = adresse -> affiche HL en hexa
+print_hex16:
+        ld      a, h
+        call    print_hex8
+        ld      a, l
+print_hex8:
+        push    af
+        rrca
+        rrca
+        rrca
+        rrca
+        call    ph_nib
+        pop     af
+ph_nib: and     #0F
+        add     a, '0'
+        cp      '9'+1
+        jr      c, ph_o
+        add     a, 7
+ph_o:   jp      TXT_OUTPUT
+
+; HL = texte brut capture : affiche jusqu'a 160 car. imprimables
+print_raw:
+        ld      b, 160
+pr_lp:  ld      a, (hl)
+        or      a
+        ret     z
+        cp      32
+        jr      c, pr_nx
+        push    bc
+        call    TXT_OUTPUT
+        pop     bc
+pr_nx:  inc     hl
+        djnz    pr_lp
+        ret
+
 param_blk:      dw str_desc
 str_desc:
 str_len:        db 0
@@ -1967,9 +2106,16 @@ str_len:        db 0
 
 str_dotdot:     db "..", 0
 
-txt_title:      db "PicoCPC VGM Explorer v5.36", 0
+txt_title:      db "PicoCPC VGM Explorer v5.42", 0
 txt_root:       db "HDD", 0
 txt_empty:      db "Aucun fichier .vgm", 0
+txt_nocat:      db "ROM PicoCPC introuvable", 13, 10, "(slots 1 a 31 testes)", 13, 10, "CAT/CD/PLAY absents ?", 0
+txt_search:     db "Recherche ROM PicoCPC...", 0
+txt_slot:       db "ROM slot ", 0
+txt_catat:      db "  CAT=#", 0
+txt_reading:    db "Lecture du catalogue...", 0
+txt_emptycap:   db "CAT ne renvoie rien.", 13, 10, "Verifie |CAT en BASIC.", 0
+txt_noplay:     db "PLAY introuvable dans la ROM", 0
 txt_par:        db " <..>", 0
 txt_dir:        db " <DIR>", 0
 b_su_fr:        db "[SUIV]", 0
@@ -1999,18 +2145,18 @@ tab_l2:         dw l2_fr, l2_en, l2_es
 txt_demo:       db "Demo pixels", 0
 txt_demofoot:   db "Une touche pour revenir", 0
 txt_tour:       db "/I", 92, 0
-ab_t1_fr:       db "VGM Explorer  v5.36", 0
-ab_t1_en:       db "VGM Explorer  v5.36", 0
-ab_t1_es:       db "VGM Explorer  v5.36", 0
+ab_t1_fr:       db "VGM Explorer  v5.42", 0
+ab_t1_en:       db "VGM Explorer  v5.42", 0
+ab_t1_es:       db "VGM Explorer  v5.42", 0
 ab_url:         db "github.com/bakatek/vgmxp", 0
-ab_t3_fr:       db "CPC 6128 + PicoCPC ROM5", 0
-ab_t3_en:       db "CPC 6128 + PicoCPC ROM5", 0
-ab_t3_es:       db "CPC 6128 + PicoCPC ROM5", 0
+ab_t3_fr:       db "CPC 464/6128 + PicoCPC", 0
+ab_t3_en:       db "CPC 464/6128 + PicoCPC", 0
+ab_t3_es:       db "CPC 464/6128 + PicoCPC", 0
 ab_t4_fr:       db "Teste avec PicoCPC :", 0
 ab_t4_en:       db "Tested with PicoCPC:", 0
 ab_t4_es:       db "Probado con PicoCPC:", 0
-ab_fw:          db "FW rev. 0.9", 0
-ab_date:        db "Sep 27 2026  #7d7cbb7c", 0
+ab_fw:          db "FW rev. 1.02", 0
+ab_date:        db "Nov  1 2026  #c220f89f", 0
 ab_t7_fr:       db "Une touche pour revenir", 0
 ab_t7_en:       db "Press any key to return", 0
 ab_t7_es:       db "Una tecla para volver", 0
@@ -2023,6 +2169,9 @@ txt_playing:    db "Lecture...", 0
 txt_esc:        db "ESC = Stop", 0
 txt_modeinfo:   db 13, "Info ROM:", 0
 
+addr_cat:        dw 0
+addr_cd:         dw 0
+addr_play:       dw 0
 depth:          db 0
 cursor:         db 0
 scroll:         db 0
@@ -2054,5 +2203,14 @@ sav_wait:       ds 3
 did_stop:       db 0
 sav_key:        ds 3
 fly_block:      ds 9
+rom_slot:       db 5
+old_sp:         dw 0
+dir_mode:       db 0
+after_ext:      db 0
+pend_ptr:       dw 0
+pend_end:       dw 0
+dir_ptr:        dw 0
+tok_end:        dw 0
+ext_ptr:        dw 0
 
         SAVE 'VGMxp.BIN',#4000,$-#4000,DSK,'build/vgmxp.dsk'
