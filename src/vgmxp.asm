@@ -1,5 +1,5 @@
 ; ========================================================================
-; PicoCPC VGM Explorer v6.02
+; PicoCPC VGM Explorer v6.03
 ; https://github.com/bakatek/vgmxp
 ; Touche V = a propos (non documentee a l'ecran)
 ; Z80 / RASM / CPC 6128 + PicoCPC ROM slot 5
@@ -2478,7 +2478,7 @@ str_len:        db 0
 
 str_dotdot:     db "..", 0
 
-txt_title:      db "PicoCPC VGM Explorer v6.02", 0
+txt_title:      db "PicoCPC VGM Explorer v6.03", 0
 txt_root:       db "HDD", 0
 txt_empty:      db "Aucun fichier .vgm", 0
 txt_nocat:      db "ROM PicoCPC introuvable", 13, 10, "(slots 1 a 31 testes)", 13, 10, "CAT/CD/PLAY absents ?", 0
@@ -2509,17 +2509,17 @@ tab_1x:         dw b_1x_fr, b_1x_en, b_1x_es
 l1_fr:          db "C: Suivant/Aleatoire     T:FR/EN/ES", 0
 l1_en:          db "C: NEXT/RAND             T:FR/EN/ES", 0
 l1_es:          db "C: Siguiente/Azar        T:FR/EN/ES", 0
-l2_fr:          db "B: Infini/uneFois", 0
-l2_en:          db "B: Infinite/oneTime", 0
-l2_es:          db "B: Infinito/unaVez", 0
+l2_fr:          db "B: Infini/uneFois  P:Rep 1 2 3", 0
+l2_en:          db "B: Infinite/oneTime  P:Path 1 2 3", 0
+l2_es:          db "B: Infinito/unaVez  P:Ruta 1 2 3", 0
 tab_l1:         dw l1_fr, l1_en, l1_es
 tab_l2:         dw l2_fr, l2_en, l2_es
 txt_demo:       db "Demo pixels", 0
 txt_demofoot:   db "Une touche pour revenir", 0
 txt_tour:       db "/I", 92, 0
-ab_t1_fr:       db "VGM Explorer  v6.02", 0
-ab_t1_en:       db "VGM Explorer  v6.02", 0
-ab_t1_es:       db "VGM Explorer  v6.02", 0
+ab_t1_fr:       db "VGM Explorer  v6.03", 0
+ab_t1_en:       db "VGM Explorer  v6.03", 0
+ab_t1_es:       db "VGM Explorer  v6.03", 0
 ab_url:         db "github.com/bakatek/vgmxp", 0
 ab_t3_fr:       db "CPC 464/6128 + PicoCPC", 0
 ab_t3_en:       db "CPC 464/6128 + PicoCPC", 0
