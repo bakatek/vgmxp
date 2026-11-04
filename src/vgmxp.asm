@@ -1,5 +1,5 @@
 ; ========================================================================
-; PicoCPC VGM Explorer v6.00
+; PicoCPC VGM Explorer v6.02
 ; https://github.com/bakatek/vgmxp
 ; Touche V = a propos (non documentee a l'ecran)
 ; Z80 / RASM / CPC 6128 + PicoCPC ROM slot 5
@@ -151,10 +151,6 @@ kl_in:  call    read_input
         jp      z, do_playall
         cp      'P'
         jp      z, do_playall
-        cp      'r'
-        jp      z, do_rename
-        cp      'R'
-        jp      z, do_rename
         cp      'd'
         jp      z, do_dump
         cp      'D'
@@ -563,7 +559,6 @@ probe_slot:
         ld      (addr_cat), hl
         ld      (addr_cd), hl
         ld      (addr_play), hl
-        ld      (addr_ren), hl
         call    KL_U_ROM_ENABLE
         ld      a, (rom_slot)
         ld      c, a
@@ -605,11 +600,7 @@ ps_cd:  cp      2
         jr      nz, ps_pl
         ld      (addr_cd), hl
         jr      ps_sv
-ps_pl:  cp      3
-        jr      nz, ps_ren
-        ld      (addr_play), hl
-        jr      ps_sv
-ps_ren: ld      (addr_ren), hl
+ps_pl:  ld      (addr_play), hl
 ps_sv:  pop     hl
 ps_sk:  ld      a, (hl)                ; saute le nom (bit 7 sur le dernier car.)
         inc     hl
@@ -649,9 +640,6 @@ match_cmd:
         ld      de, nm_play
         call    name_eq
         jr      z, mc_pl
-        ld      de, nm_ren
-        call    name_eq
-        jr      z, mc_ren
         xor     a
         ret
 mc_cat: ld      a, 1
@@ -659,8 +647,6 @@ mc_cat: ld      a, 1
 mc_cd:  ld      a, 2
         ret
 mc_pl:  ld      a, 3
-        ret
-mc_ren: ld      a, 4
         ret
 
 ; HL = nom ROM (bit7), DE = modele bit7. Z si egal
@@ -685,7 +671,6 @@ ne_no:  pop     hl
 nm_cat:  db "CA", 'T'+#80
 nm_cd:   db "C", 'D'+#80
 nm_play: db "PLA", 'Y'+#80
-nm_ren:  db "RE", 'N'+#80
 
 ; ========================================================================
 ; PARSEUR DU CATALOGUE (firmware 1.02)
@@ -779,7 +764,10 @@ do_token:
         ld      hl, (tok_ptr)
         ld      a, (hl)
         cp      '('
+        jr      nz, dt_notdir
+        call    is_dir_start           ; "(NOM)" = dossier ; "(NOM.vgm" = fichier
         jp      z, dt_dir
+dt_notdir:
         ld      a, (after_ext)
         or      a
         jr      z, dt_nosz
@@ -874,6 +862,29 @@ cr_nx:  inc     hl
         ld      a, 1
         ld      (after_ext), a
         jr      dt_reset
+
+; Z si le token '(' ouvre un dossier : on rencontre ')' avant '.'
+; (un fichier a toujours un '.' avant sa fin de ligne)
+is_dir_start:
+        ld      hl, (tok_ptr)
+        ld      b, 40
+ids_lp: ld      a, (hl)
+        cp      ')'
+        jr      z, ids_dir
+        cp      '.'
+        jr      z, ids_file
+        cp      13
+        jr      z, ids_file
+        or      a
+        jr      z, ids_file
+        inc     hl
+        djnz    ids_lp
+ids_file:
+        or      1
+        ret
+ids_dir:
+        xor     a
+        ret
 
 ; dossier : "(nom)" ; le nom peut contenir des espaces
 dt_dir:
@@ -2363,82 +2374,6 @@ cpp_ok: xor     a
 pat_cur:      db 34, "C:", 0
 pat_ne:       db "not exist", 0
 
-; ---- Renommage : espaces -> _ dans les fichiers du dossier courant ----
-do_rename:
-        ld      hl, (addr_ren)
-        ld      a, h
-        or      l
-        jp      z, keyloop
-        call    ren_all
-        jp      browser
-
-ren_all:
-        xor     a
-        ld      (rn_i), a
-ra_lp:  ld      a, (rn_i)
-        ld      b, a
-        ld      a, (total)
-        cp      b
-        ret     z
-        ld      a, b
-        call    get_type
-        or      a
-        jr      nz, ra_nx              ; dossiers et ".." : on ne touche pas
-        ld      a, (rn_i)
-        call    get_name               ; HL = nom
-        ld      de, str_ro
-        ld      b, 0
-        ld      c, 0
-ra_cp:  ld      a, (hl)
-        ld      (de), a
-        or      a
-        jr      z, ra_cpe
-        cp      32
-        jr      nz, ra_c2
-        inc     c                      ; compte les espaces
-ra_c2:  inc     hl
-        inc     de
-        inc     b
-        ld      a, b
-        cp      NAME_LEN-1
-        jr      c, ra_cp
-ra_cpe: xor     a
-        ld      (de), a
-        ld      a, c
-        or      a
-        jr      z, ra_nx               ; pas d'espace
-        ld      hl, str_ro
-        ld      de, str_rn
-ra_rp:  ld      a, (hl)
-        cp      32
-        jr      nz, ra_r2
-        ld      a, '_'
-ra_r2:  ld      (de), a
-        or      a
-        jr      z, ra_rd
-        inc     hl
-        inc     de
-        jr      ra_rp
-ra_rd:  ld      a, b
-        ld      (ren_old_d), a
-        ld      (ren_new_d), a
-        ld      a, 2
-        ld      ix, param_ren
-        ld      hl, (addr_ren)
-        call    call_pico
-ra_nx:  ld      a, (rn_i)
-        inc     a
-        ld      (rn_i), a
-        jr      ra_lp
-
-; REN : IX+0 = nouveau nom, IX+2 = ancien nom
-param_ren:      dw ren_new_d
-                dw ren_old_d
-ren_new_d:      db 0
-                dw str_rn
-ren_old_d:      db 0
-                dw str_ro
-
 ; ---- Lecture en chaine : dossiers 1, 2, 3... (touche P) -------------
 ; A partir du dossier sous le curseur, pour chaque dossier : entre dedans,
 ; joue tous les fichiers (max 80), remonte, passe au dossier suivant.
@@ -2543,7 +2478,7 @@ str_len:        db 0
 
 str_dotdot:     db "..", 0
 
-txt_title:      db "PicoCPC VGM Explorer v6.00", 0
+txt_title:      db "PicoCPC VGM Explorer v6.02", 0
 txt_root:       db "HDD", 0
 txt_empty:      db "Aucun fichier .vgm", 0
 txt_nocat:      db "ROM PicoCPC introuvable", 13, 10, "(slots 1 a 31 testes)", 13, 10, "CAT/CD/PLAY absents ?", 0
@@ -2582,9 +2517,9 @@ tab_l2:         dw l2_fr, l2_en, l2_es
 txt_demo:       db "Demo pixels", 0
 txt_demofoot:   db "Une touche pour revenir", 0
 txt_tour:       db "/I", 92, 0
-ab_t1_fr:       db "VGM Explorer  v6.00", 0
-ab_t1_en:       db "VGM Explorer  v6.00", 0
-ab_t1_es:       db "VGM Explorer  v6.00", 0
+ab_t1_fr:       db "VGM Explorer  v6.02", 0
+ab_t1_en:       db "VGM Explorer  v6.02", 0
+ab_t1_es:       db "VGM Explorer  v6.02", 0
 ab_url:         db "github.com/bakatek/vgmxp", 0
 ab_t3_fr:       db "CPC 464/6128 + PicoCPC", 0
 ab_t3_en:       db "CPC 464/6128 + PicoCPC", 0
@@ -2652,10 +2587,6 @@ ext_ptr:        dw 0
 pa_idx:         db 0
 pa_f:           db 0
 pa_start_depth: db 0
-addr_ren:       dw 0
-rn_i:           db 0
-str_ro:         ds 17
-str_rn:         ds 17
 nav_dir:        db 0
 home_cnt:       db 0
 
