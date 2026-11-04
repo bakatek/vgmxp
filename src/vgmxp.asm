@@ -1,5 +1,5 @@
 ; ========================================================================
-; PicoCPC VGM Explorer v5.45
+; PicoCPC VGM Explorer v6.00
 ; https://github.com/bakatek/vgmxp
 ; Touche V = a propos (non documentee a l'ecran)
 ; Z80 / RASM / CPC 6128 + PicoCPC ROM slot 5
@@ -147,6 +147,14 @@ kl_in:  call    read_input
         jp      z, toggle_fold
         cp      'B'
         jp      z, toggle_fold
+        cp      'p'
+        jp      z, do_playall
+        cp      'P'
+        jp      z, do_playall
+        cp      'r'
+        jp      z, do_rename
+        cp      'R'
+        jp      z, do_rename
         cp      'd'
         jp      z, do_dump
         cp      'D'
@@ -555,6 +563,7 @@ probe_slot:
         ld      (addr_cat), hl
         ld      (addr_cd), hl
         ld      (addr_play), hl
+        ld      (addr_ren), hl
         call    KL_U_ROM_ENABLE
         ld      a, (rom_slot)
         ld      c, a
@@ -596,7 +605,11 @@ ps_cd:  cp      2
         jr      nz, ps_pl
         ld      (addr_cd), hl
         jr      ps_sv
-ps_pl:  ld      (addr_play), hl
+ps_pl:  cp      3
+        jr      nz, ps_ren
+        ld      (addr_play), hl
+        jr      ps_sv
+ps_ren: ld      (addr_ren), hl
 ps_sv:  pop     hl
 ps_sk:  ld      a, (hl)                ; saute le nom (bit 7 sur le dernier car.)
         inc     hl
@@ -636,6 +649,9 @@ match_cmd:
         ld      de, nm_play
         call    name_eq
         jr      z, mc_pl
+        ld      de, nm_ren
+        call    name_eq
+        jr      z, mc_ren
         xor     a
         ret
 mc_cat: ld      a, 1
@@ -643,6 +659,8 @@ mc_cat: ld      a, 1
 mc_cd:  ld      a, 2
         ret
 mc_pl:  ld      a, 3
+        ret
+mc_ren: ld      a, 4
         ret
 
 ; HL = nom ROM (bit7), DE = modele bit7. Z si egal
@@ -667,6 +685,7 @@ ne_no:  pop     hl
 nm_cat:  db "CA", 'T'+#80
 nm_cd:   db "C", 'D'+#80
 nm_play: db "PLA", 'Y'+#80
+nm_ren:  db "RE", 'N'+#80
 
 ; ========================================================================
 ; PARSEUR DU CATALOGUE (firmware 1.02)
@@ -2344,6 +2363,179 @@ cpp_ok: xor     a
 pat_cur:      db 34, "C:", 0
 pat_ne:       db "not exist", 0
 
+; ---- Renommage : espaces -> _ dans les fichiers du dossier courant ----
+do_rename:
+        ld      hl, (addr_ren)
+        ld      a, h
+        or      l
+        jp      z, keyloop
+        call    ren_all
+        jp      browser
+
+ren_all:
+        xor     a
+        ld      (rn_i), a
+ra_lp:  ld      a, (rn_i)
+        ld      b, a
+        ld      a, (total)
+        cp      b
+        ret     z
+        ld      a, b
+        call    get_type
+        or      a
+        jr      nz, ra_nx              ; dossiers et ".." : on ne touche pas
+        ld      a, (rn_i)
+        call    get_name               ; HL = nom
+        ld      de, str_ro
+        ld      b, 0
+        ld      c, 0
+ra_cp:  ld      a, (hl)
+        ld      (de), a
+        or      a
+        jr      z, ra_cpe
+        cp      32
+        jr      nz, ra_c2
+        inc     c                      ; compte les espaces
+ra_c2:  inc     hl
+        inc     de
+        inc     b
+        ld      a, b
+        cp      NAME_LEN-1
+        jr      c, ra_cp
+ra_cpe: xor     a
+        ld      (de), a
+        ld      a, c
+        or      a
+        jr      z, ra_nx               ; pas d'espace
+        ld      hl, str_ro
+        ld      de, str_rn
+ra_rp:  ld      a, (hl)
+        cp      32
+        jr      nz, ra_r2
+        ld      a, '_'
+ra_r2:  ld      (de), a
+        or      a
+        jr      z, ra_rd
+        inc     hl
+        inc     de
+        jr      ra_rp
+ra_rd:  ld      a, b
+        ld      (ren_old_d), a
+        ld      (ren_new_d), a
+        ld      a, 2
+        ld      ix, param_ren
+        ld      hl, (addr_ren)
+        call    call_pico
+ra_nx:  ld      a, (rn_i)
+        inc     a
+        ld      (rn_i), a
+        jr      ra_lp
+
+; REN : IX+0 = nouveau nom, IX+2 = ancien nom
+param_ren:      dw ren_new_d
+                dw ren_old_d
+ren_new_d:      db 0
+                dw str_rn
+ren_old_d:      db 0
+                dw str_ro
+
+; ---- Lecture en chaine : dossiers 1, 2, 3... (touche P) -------------
+; A partir du dossier sous le curseur, pour chaque dossier : entre dedans,
+; joue tous les fichiers (max 80), remonte, passe au dossier suivant.
+; ESC arrete tout et remonte au dossier de depart.
+do_playall:
+        ld      a, (total)
+        or      a
+        jp      z, keyloop
+        ld      a, (addr_play)
+        ld      b, a
+        ld      a, (addr_play+1)
+        or      b
+        jp      z, keyloop
+        ld      a, (depth)
+        ld      (pa_start_depth), a
+        ld      a, (cursor)
+        ld      (pa_idx), a
+pa_next:
+        ld      a, (total)
+        ld      b, a
+        ld      a, (pa_idx)
+        cp      b
+        jr      nc, pa_fin
+        call    get_type
+        cp      1
+        jr      nz, pa_adv             ; seuls les dossiers comptent
+        ld      a, (pa_idx)
+        call    copy_name_to_str
+        ld      a, 1
+        call    cd_nav
+        call    do_catalog
+        xor     a
+        ld      (pa_f), a
+pa_file:
+        ld      a, (total)
+        ld      b, a
+        ld      a, (pa_f)
+        cp      b
+        jr      nc, pa_back
+        call    get_type
+        or      a
+        jr      nz, pa_fadv            ; pas un fichier
+        ld      a, (pa_f)
+        call    copy_name_to_str
+        call    strip_vgm
+        ld      a, (str_len)
+        or      a
+        jr      z, pa_fadv
+        call    play_one
+        ld      a, (did_stop)
+        or      a
+        jr      nz, pa_stop
+pa_fadv:
+        ld      a, (pa_f)
+        inc     a
+        ld      (pa_f), a
+        jr      pa_file
+pa_back:
+        call    cd_up_one
+        call    do_catalog
+pa_adv:
+        ld      a, (pa_idx)
+        inc     a
+        ld      (pa_idx), a
+        jr      pa_next
+pa_stop:
+        ld      a, (depth)
+        ld      b, a
+        ld      a, (pa_start_depth)
+        cp      b
+        jr      nc, pa_fin             ; depart >= profondeur : c'est fini
+        call    cd_up_one
+        jr      pa_stop
+pa_fin:
+        jp      browser
+
+cd_up_one:
+        call    set_dotdot
+        xor     a
+        call    cd_nav
+        ret
+
+; joue str_buf ; A = did_stop en sortie
+play_one:
+        call    draw_play_screen
+        xor     a
+        ld      (did_stop), a
+        call    hook_esc_on
+        ld      a, 1
+        ld      ix, param_blk
+        ld      hl, (addr_play)
+        call    call_pico
+        call    hook_esc_off
+        call    init_video
+        ld      a, (did_stop)
+        ret
+
 param_blk:      dw str_desc
 str_desc:
 str_len:        db 0
@@ -2351,7 +2543,7 @@ str_len:        db 0
 
 str_dotdot:     db "..", 0
 
-txt_title:      db "PicoCPC VGM Explorer v5.45", 0
+txt_title:      db "PicoCPC VGM Explorer v6.00", 0
 txt_root:       db "HDD", 0
 txt_empty:      db "Aucun fichier .vgm", 0
 txt_nocat:      db "ROM PicoCPC introuvable", 13, 10, "(slots 1 a 31 testes)", 13, 10, "CAT/CD/PLAY absents ?", 0
@@ -2390,9 +2582,9 @@ tab_l2:         dw l2_fr, l2_en, l2_es
 txt_demo:       db "Demo pixels", 0
 txt_demofoot:   db "Une touche pour revenir", 0
 txt_tour:       db "/I", 92, 0
-ab_t1_fr:       db "VGM Explorer  v5.45", 0
-ab_t1_en:       db "VGM Explorer  v5.45", 0
-ab_t1_es:       db "VGM Explorer  v5.45", 0
+ab_t1_fr:       db "VGM Explorer  v6.00", 0
+ab_t1_en:       db "VGM Explorer  v6.00", 0
+ab_t1_es:       db "VGM Explorer  v6.00", 0
 ab_url:         db "github.com/bakatek/vgmxp", 0
 ab_t3_fr:       db "CPC 464/6128 + PicoCPC", 0
 ab_t3_en:       db "CPC 464/6128 + PicoCPC", 0
@@ -2457,6 +2649,13 @@ pend_end:       dw 0
 dir_ptr:        dw 0
 tok_end:        dw 0
 ext_ptr:        dw 0
+pa_idx:         db 0
+pa_f:           db 0
+pa_start_depth: db 0
+addr_ren:       dw 0
+rn_i:           db 0
+str_ro:         ds 17
+str_rn:         ds 17
 nav_dir:        db 0
 home_cnt:       db 0
 
