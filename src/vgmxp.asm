@@ -1,5 +1,5 @@
 ; ========================================================================
-; PicoCPC VGM Explorer v5.42
+; PicoCPC VGM Explorer v5.45
 ; https://github.com/bakatek/vgmxp
 ; Touche V = a propos (non documentee a l'ecran)
 ; Z80 / RASM / CPC 6128 + PicoCPC ROM slot 5
@@ -96,6 +96,7 @@ start:
         ld      (lang), a              ; 0=FR 1=EN 2=ES
         ld      hl, path_buf
         ld      (hl), 0
+        call    cd_home                ; ramene a la racine si le CPC garde un dossier
 
 browser:
         call    do_catalog
@@ -146,6 +147,10 @@ kl_in:  call    read_input
         jp      z, toggle_fold
         cp      'B'
         jp      z, toggle_fold
+        cp      'd'
+        jp      z, do_dump
+        cp      'D'
+        jp      z, do_dump
         cp      't'
         jp      z, toggle_lang
         cp      'T'
@@ -712,10 +717,22 @@ skip_sep:
         ret     nz
         inc     hl
         jr      skip_sep
+; CR : ligne vide (CR suivi d'un CR ou de la fin) = on oublie les mots en
+; attente (en-tete "Drive ..."). Sinon c'est un espace (nom coupe par CR).
 ss_cr:  push    hl
-        ld      hl, 0
+        inc     hl
+ss_b:   ld      a, (hl)
+        cp      32
+        jr      nz, ss_chk
+        inc     hl
+        jr      ss_b
+ss_chk: cp      13
+        jr      z, ss_rst
+        or      a
+        jr      nz, ss_keep
+ss_rst: ld      hl, 0
         ld      (pend_ptr), hl
-        pop     hl
+ss_keep: pop    hl
         inc     hl
         jr      skip_sep
 
@@ -824,6 +841,14 @@ df_ext: ld      hl, (ext_ptr)
         ldir
         xor     a
         ld      (de), a
+        ld      hl, str_buf            ; un CR coupant le nom devient un espace
+        ld      b, NAME_LEN
+cr_lp:  ld      a, (hl)
+        cp      13
+        jr      nz, cr_nx
+        ld      (hl), 32
+cr_nx:  inc     hl
+        djnz    cr_lp
         ld      hl, str_buf
         xor     a
         call    store_item             ; type 0 = fichier
@@ -1604,14 +1629,8 @@ ok_dir: ld      a, (cursor)
         ld      a, (str_len)
         or      a
         jp      z, keyloop
-        ld      a, 1
-        ld      ix, param_blk
-        ld      hl, (addr_cd)
-        call    call_pico
-        ld      a, (depth)
-        inc     a
-        ld      (depth), a
-        call    path_push
+        ld      a, 1                   ; 1 = descente
+        call    cd_nav
         jp      browser
 
 ok_play:
@@ -1736,14 +1755,9 @@ cd_up:
         ld      (hl), 0
         ld      a, 2
         ld      (str_len), a
-        ld      a, 1
-        ld      ix, param_blk
-        ld      hl, (addr_cd)
-        call    call_pico
-        ld      a, (depth)
-        dec     a
-        ld      (depth), a
-        jp      path_pop
+        xor     a                      ; 0 = remontee
+        call    cd_nav
+        ret
 
 copy_name_to_str:
         call    get_name
@@ -1870,6 +1884,44 @@ toggle_lang:
         jr      c, tl_ok
         xor     a
 tl_ok:  ld      (lang), a
+        call    draw_ui
+        jp      keyloop
+
+do_dump:
+        call    SCR_CLEAR
+        xor     a
+        call    TXT_SET_PAPER
+        ld      a, 1
+        call    TXT_SET_PEN
+        ld      h, 1
+        ld      l, 1
+        call    TXT_SET_CURSOR
+        ld      hl, capture_buffer
+        ld      de, 760
+dd_lp:  ld      a, (hl)
+        or      a
+        jr      z, dd_end
+        cp      13
+        jr      nz, dd_c2
+        ld      a, '|'
+        jr      dd_out
+dd_c2:  cp      32
+        jr      nc, dd_out
+        ld      a, '.'
+dd_out: push    hl
+        push    de
+        call    TXT_OUTPUT
+        pop     de
+        pop     hl
+        inc     hl
+        dec     de
+        ld      a, d
+        or      e
+        jr      nz, dd_lp
+dd_end: call    KM_READ_CHAR
+        jr      c, dd_end
+dd_w:   call    KM_READ_CHAR
+        jr      nc, dd_w
         call    draw_ui
         jp      keyloop
 
@@ -2099,6 +2151,199 @@ pr_nx:  inc     hl
         djnz    pr_lp
         ret
 
+; ================================================================
+; SYNCHRO DU DOSSIER
+; La reponse du CPC a un CD,"nom" est :
+;   Current folder "C:/chemin"   -> ok, chemin = ce qui suit "C:
+;   Folder "nom" does not exist. -> rien ne change
+; Si le chemin finit par '/', on est dans un dossier casse : CD,".." .
+; (CD,"    " ajoute un '/' a chaque appel : on ne l'utilise pas.)
+; ================================================================
+cd_hook_on:
+        di
+        ld      hl, TXT_OUTPUT
+        ld      de, sav_out
+        ld      bc, hook_txt
+        call    patch_jp
+        ld      hl, capture_buffer
+        ld      (cap_ptr), hl
+        ld      (hl), 0
+        ei
+        ret
+
+cd_hook_off:
+        di
+        ld      hl, TXT_OUTPUT
+        ld      de, sav_out
+        call    unpatch
+        ei
+        ret
+
+; CD avec str_buf / str_len ; la reponse est dans capture_buffer
+cd_call:
+        ld      hl, (addr_cd)
+        ld      a, h
+        or      l
+        jr      nz, cc_ok
+        ld      hl, capture_buffer
+        ld      (hl), 0
+        ret
+cc_ok:  call    cd_hook_on
+        ld      a, 1
+        ld      ix, param_blk
+        ld      hl, (addr_cd)
+        call    call_pico
+        jp      cd_hook_off
+
+set_dotdot:
+        ld      hl, str_buf
+        ld      (hl), '.'
+        inc     hl
+        ld      (hl), '.'
+        inc     hl
+        ld      (hl), 0
+        ld      a, 2
+        ld      (str_len), a
+        ret
+
+; A = 1 descente (nom dans str_buf), 0 remontee
+cd_nav:
+        ld      (nav_dir), a
+        call    cd_call
+        ld      de, pat_cur
+        call    find_cap
+        jr      z, cn_found
+        ld      de, pat_ne
+        call    find_cap
+        ret     z                      ; dossier inexistant : on reste ici
+        ; reponse inconnue : on suit le compte local
+        ld      a, (nav_dir)
+        or      a
+        jr      z, cn_up
+        ld      a, (depth)
+        inc     a
+        ld      (depth), a
+        jp      path_push
+cn_up:  ld      a, (depth)
+        or      a
+        ret     z
+        dec     a
+        ld      (depth), a
+        jp      path_pop
+cn_found:
+        call    cp_path
+        cp      2
+        ret     nz
+        call    set_dotdot             ; chemin finissant par '/' : CD,".."
+        call    cd_call
+        ld      de, pat_cur
+        call    find_cap
+        ret     nz
+        jp      cp_path
+
+; Au demarrage : remonte jusqu'a la racine (8 essais max)
+cd_home:
+        ld      a, 8
+        ld      (home_cnt), a
+ch_lp:  call    set_dotdot
+        call    cd_call
+        ld      de, pat_cur
+        call    find_cap
+        ret     nz
+        call    cp_path
+        ld      a, (path_len)
+        or      a
+        ret     z
+        ld      hl, home_cnt
+        dec     (hl)
+        jr      nz, ch_lp
+        ret
+
+; DE = motif zero-termine. Cherche dans capture_buffer.
+; Z si trouve, HL = juste apres le motif.
+find_cap:
+        ld      hl, capture_buffer
+fc_fnd: ld      a, (hl)
+        or      a
+        jr      z, fc_no
+        push    hl
+        push    de
+fc_cmp: ld      a, (de)
+        or      a
+        jr      z, fc_hit
+        cp      (hl)
+        jr      nz, fc_miss
+        inc     de
+        inc     hl
+        jr      fc_cmp
+fc_miss:
+        pop     de
+        pop     hl
+        inc     hl
+        jr      fc_fnd
+fc_hit: pop     bc
+        pop     bc
+        xor     a
+        ret
+fc_no:  or      1
+        ret
+
+; HL = juste apres '"C:' -> path_buf, path_len, depth.
+; A = 2 si le chemin finit par '/', sinon 0.
+cp_path:
+        ld      de, path_buf
+        ld      b, 0
+cpp_c:  ld      a, (hl)
+        or      a
+        jr      z, cpp_e
+        cp      34
+        jr      z, cpp_e
+        cp      13
+        jr      z, cpp_e
+        ld      (de), a
+        inc     de
+        inc     hl
+        inc     b
+        ld      a, b
+        cp      39
+        jr      c, cpp_c
+cpp_e:  xor     a
+        ld      (de), a
+        ld      a, b
+        ld      (path_len), a
+        ld      c, 0
+        or      a
+        jr      z, cpp_d
+        ld      hl, path_buf
+        ld      d, b
+cpp_n:  ld      a, (hl)
+        cp      '/'
+        jr      nz, cpp_n2
+        inc     c
+cpp_n2: inc     hl
+        dec     d
+        jr      nz, cpp_n
+cpp_d:  ld      a, c
+        ld      (depth), a
+        ld      a, (path_len)
+        or      a
+        jr      z, cpp_ok
+        ld      e, a
+        ld      d, 0
+        ld      hl, path_buf
+        add     hl, de
+        dec     hl
+        ld      a, (hl)
+        cp      '/'
+        jr      nz, cpp_ok
+        ld      a, 2
+        ret
+cpp_ok: xor     a
+        ret
+
+pat_cur:      db 34, "C:", 0
+pat_ne:       db "not exist", 0
+
 param_blk:      dw str_desc
 str_desc:
 str_len:        db 0
@@ -2106,7 +2351,7 @@ str_len:        db 0
 
 str_dotdot:     db "..", 0
 
-txt_title:      db "PicoCPC VGM Explorer v5.42", 0
+txt_title:      db "PicoCPC VGM Explorer v5.45", 0
 txt_root:       db "HDD", 0
 txt_empty:      db "Aucun fichier .vgm", 0
 txt_nocat:      db "ROM PicoCPC introuvable", 13, 10, "(slots 1 a 31 testes)", 13, 10, "CAT/CD/PLAY absents ?", 0
@@ -2145,9 +2390,9 @@ tab_l2:         dw l2_fr, l2_en, l2_es
 txt_demo:       db "Demo pixels", 0
 txt_demofoot:   db "Une touche pour revenir", 0
 txt_tour:       db "/I", 92, 0
-ab_t1_fr:       db "VGM Explorer  v5.42", 0
-ab_t1_en:       db "VGM Explorer  v5.42", 0
-ab_t1_es:       db "VGM Explorer  v5.42", 0
+ab_t1_fr:       db "VGM Explorer  v5.45", 0
+ab_t1_en:       db "VGM Explorer  v5.45", 0
+ab_t1_es:       db "VGM Explorer  v5.45", 0
 ab_url:         db "github.com/bakatek/vgmxp", 0
 ab_t3_fr:       db "CPC 464/6128 + PicoCPC", 0
 ab_t3_en:       db "CPC 464/6128 + PicoCPC", 0
@@ -2212,5 +2457,7 @@ pend_end:       dw 0
 dir_ptr:        dw 0
 tok_end:        dw 0
 ext_ptr:        dw 0
+nav_dir:        db 0
+home_cnt:       db 0
 
         SAVE 'VGMxp.BIN',#4000,$-#4000,DSK,'build/vgmxp.dsk'
